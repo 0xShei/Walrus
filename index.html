@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Walrus Blob Upload & Retrieve</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {
+      padding: 20px;
+    }
+    #uploaded-blobs {
+      margin-top: 20px;
+    }
+    .alert {
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1 class="mb-4">Walrus Blob Upload & Retrieve</h1>
+    <form id="upload-form" onsubmit="return onSubmit(event)" class="mb-4">
+      <fieldset id="form-fieldset">
+        <div class="mb-3">
+          <label for="publisher-url-input" class="form-label">Walrus Publisher URL</label>
+          <input id="publisher-url-input" type="url" class="form-control" value="https://publisher.walrus-testnet.walrus.space" required />
+        </div>
+        <div class="mb-3">
+          <label for="aggregator-url-input" class="form-label">Walrus Aggregator URL</label>
+          <input id="aggregator-url-input" type="url" class="form-control" value="https://aggregator.walrus-testnet.walrus.space" required />
+        </div>
+        <div class="mb-3">
+          <label for="file-input" class="form-label">Blob to upload (Max 10 MiB size)</label>
+          <input id="file-input" type="file" class="form-control" required />
+        </div>
+        <div class="mb-3">
+          <label for="epochs-input" class="form-label">Epochs</label>
+          <input id="epochs-input" type="number" class="form-control" value="1" min="1" required />
+        </div>
+        <div class="mb-3">
+          <label for="send-to-input" class="form-label">Send to</label>
+          <input id="send-to-input" class="form-control" placeholder="Your address" />
+        </div>
+        <button id="submit" class="btn btn-primary">
+          <span id="submit-spinner" class="spinner-border spinner-border-sm" aria-hidden="true" style="visibility: collapse;"></span>
+          <span id="submit-text">Upload</span>
+        </button>
+      </fieldset>
+    </form>
+
+    <div id="uploaded-blobs" class="list-group"></div>
+    <div id="alert" class="alert alert-danger" role="alert" style="visibility: hidden;"></div>
+  </div>
+
+  <script>
+    function onSubmit(event) {
+      event.preventDefault();
+      enableForm(false);
+      const startTime = performance.now();
+
+      storeBlob().then((storageInfo) => {
+        const uploadTime = performance.now() - startTime;
+        let blobId;
+        
+        // Check if the response contains blobId or if it's nested in "alreadyCertified"
+        if (storageInfo.info.blobId) {
+          blobId = storageInfo.info.blobId;
+        } else if (storageInfo.info.alreadyCertified) {
+          if (storageInfo.info.alreadyCertified.blobId) {
+            blobId = storageInfo.info.alreadyCertified.blobId;
+          } else if (storageInfo.info.alreadyCertified.id) {
+            blobId = storageInfo.info.alreadyCertified.id;
+          }
+        }
+        
+        if (!blobId) {
+          showAlert("Upload succeeded, but no blob ID was returned from the publisher. Check the console for full response.");
+          console.log("Full upload response:", storageInfo.info);
+          enableForm(true);
+          return;
+        }
+        
+        // Enhance the storage info object with the blobId for consistency.
+        const newStorageInfo = { ...storageInfo.info, blobId: blobId };
+        displayUpload(newStorageInfo, storageInfo.media_type, uploadTime);
+        showAlert(null);
+        enableForm(true);
+      }).catch((error) => {
+        console.error(error);
+        showAlert("An error occurred while uploading. Check the browser console and ensure that the aggregator and publisher URLs are correct.");
+        enableForm(true);
+      });
+
+      return false;
+    }
+
+    function storeBlob() {
+      const inputFile = document.getElementById("file-input").files[0];
+      const numEpochs = document.getElementById("epochs-input").value;
+      const basePublisherUrl = document.getElementById("publisher-url-input").value;
+
+      let sendTo = document.getElementById("send-to-input").value.trim();
+      let sendToParam = sendTo ? `&send_object_to=${sendTo}` : "";
+      return fetch(`${basePublisherUrl}/v1/blobs?epochs=${numEpochs}${sendToParam}`, {
+        method: "PUT",
+        body: inputFile,
+      }).then((response) => {
+        if (response.status === 200) {
+          return response.json().then((info) => {
+            console.log("Upload response:", info); // Log the full response for debugging
+            return { info: info, media_type: inputFile.type };
+          });
+        } else {
+          throw new Error("Something went wrong when storing the blob!");
+        }
+      });
+    }
+
+    function displayUpload(storage_info, media_type, uploadTime) {
+      const baseAggregatorUrl = document.getElementById("aggregator-url-input").value;
+      const blobId = storage_info.blobId;
+      const blobUrl = `${baseAggregatorUrl}/v1/blobs/${blobId}`;
+
+      const listItem = document.createElement('div');
+      listItem.className = 'list-group-item';
+      listItem.innerHTML = `
+        <p>Status: ${storage_info.status}</p>
+        <p>Blob ID: <a href="${blobUrl}" target="_blank">${blobId}</a></p>
+        <p>Stored until epoch: ${storage_info.endEpoch}</p>
+        <p>Upload Time: ${uploadTime.toFixed(2)} ms</p>
+        <button class="btn btn-secondary" onclick="retrieveBlob('${blobUrl}')">Retrieve Blob</button>
+      `;
+      document.getElementById("uploaded-blobs").prepend(listItem);
+    }
+
+    function retrieveBlob(blobUrl) {
+      const startTime = performance.now();
+      fetch(blobUrl)
+        .then(response => {
+          if (!response.ok) {
+            throw new Error("Network response was not ok");
+          }
+          return response.blob();
+        })
+        .then(blob => {
+          const retrieveTime = performance.now() - startTime;
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'retrieved_blob';
+          link.click();
+          URL.revokeObjectURL(url);
+          showAlert(`Blob retrieved in ${retrieveTime.toFixed(2)} ms`);
+        })
+        .catch(error => {
+          console.error('Error retrieving blob:', error);
+          showAlert('Error retrieving blob. Check the console for details.');
+        });
+    }
+
+    function enableForm(isEnabled) {
+      document.getElementById("form-fieldset").disabled = !isEnabled;
+      document.getElementById("submit-spinner").style.visibility = isEnabled ? "collapse" : "visible";
+      document.getElementById("submit-text").textContent = isEnabled ? "Upload" : "Uploading...";
+    }
+
+    function showAlert(message) {
+      const alertElement = document.getElementById("alert");
+      alertElement.textContent = message || '';
+      alertElement.style.visibility = message ? "visible" : "hidden";
+    }
+  </script>
+</body>
+</html>
